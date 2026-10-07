@@ -1,0 +1,681 @@
+from flask import Blueprint, jsonify
+from ..db import get_connection
+from ..utils import auth_required, current_user
+
+dashboard_bp = Blueprint("dashboard", __name__)
+
+
+# =========================================================
+# SUPERADMIN / GENERAL DASHBOARD
+# =========================================================
+
+@dashboard_bp.get("/stats")
+@auth_required(["SUPERADMIN", "ADMIN", "MEMBER"])
+def stats():
+
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+
+            # USERS
+            cursor.execute("""
+                SELECT COUNT(*) AS n
+                FROM users
+            """)
+            users = cursor.fetchone()["n"]
+
+            # ADMINS
+            cursor.execute("""
+                SELECT COUNT(*) AS n
+                FROM users
+                WHERE role = 'ADMIN'
+            """)
+            admins = cursor.fetchone()["n"]
+
+            # SCHOOLS
+            cursor.execute("""
+                SELECT COUNT(*) AS n
+                FROM schools
+            """)
+            schools = cursor.fetchone()["n"]
+
+            # PUBLISHED SCHOOLS
+            cursor.execute("""
+                SELECT COUNT(*) AS n
+                FROM schools
+                WHERE publication_status = 'PUBLISHED'
+            """)
+            published_schools = cursor.fetchone()["n"]
+
+            # ACTIVITIES
+            cursor.execute("""
+                SELECT COUNT(*) AS n
+                FROM activities
+            """)
+            activities = cursor.fetchone()["n"]
+
+            # IMAGES
+            cursor.execute("""
+                SELECT COUNT(*) AS n
+                FROM school_images
+            """)
+            images = cursor.fetchone()["n"]
+
+            # RECENT SCHOOLS
+            cursor.execute("""
+                SELECT
+                    id,
+                    name,
+                    location,
+                    publication_status
+                FROM schools
+                ORDER BY created_at DESC
+                LIMIT 5
+            """)
+            recent_schools = cursor.fetchall()
+
+        return jsonify(
+            success=True,
+            stats={
+                "users": users,
+                "admins": admins,
+                "schools": schools,
+                "published_schools": published_schools,
+                "activities": activities,
+                "images": images
+            },
+            recent_schools=recent_schools
+        )
+
+    except Exception as e:
+
+        print("DASHBOARD ERROR:", e)
+
+        return jsonify(
+            success=False,
+            message="Failed to load dashboard statistics",
+            error=str(e)
+        ), 500
+
+    finally:
+        connection.close()
+
+
+# =========================================================
+# ADMIN SCHOOL DASHBOARD
+# =========================================================
+
+@dashboard_bp.get("/admin-stats")
+@auth_required(["ADMIN"])
+def admin_stats():
+
+    user = current_user()
+    user_id = user["user_id"]
+
+    connection = get_connection()
+
+    try:
+
+        with connection.cursor() as cursor:
+
+            # -------------------------------------------------
+            # FIND ADMIN'S SCHOOL
+            # -------------------------------------------------
+
+            cursor.execute("""
+                SELECT
+                    s.id,
+                    s.name,
+                    s.location,
+                    s.school_type,
+                    s.description,
+                    s.phone,
+                    s.email,
+                    s.website,
+                    s.address,
+                    s.logo,
+                    s.publication_status,
+                    s.rating
+                FROM school_admins sa
+                INNER JOIN schools s
+                    ON s.id = sa.school_id
+                WHERE sa.user_id = %s
+                LIMIT 1
+            """, (user_id,))
+
+            school = cursor.fetchone()
+
+            if not school:
+
+                return jsonify(
+                    success=False,
+                    message="No school has been assigned to this admin."
+                ), 404
+
+            school_id = school["id"]
+
+            # -------------------------------------------------
+            # ACTIVITIES
+            # -------------------------------------------------
+
+            cursor.execute("""
+                SELECT COUNT(*) AS n
+                FROM activities
+                WHERE school_id = %s
+            """, (school_id,))
+
+            activities = cursor.fetchone()["n"]
+
+            # -------------------------------------------------
+            # FEATURES
+            # -------------------------------------------------
+
+            cursor.execute("""
+                SELECT COUNT(*) AS n
+                FROM features
+                WHERE school_id = %s
+            """, (school_id,))
+
+            features = cursor.fetchone()["n"]
+
+            # -------------------------------------------------
+            # FACILITIES
+            # -------------------------------------------------
+
+            cursor.execute("""
+                SELECT COUNT(*) AS n
+                FROM facilities
+                WHERE school_id = %s
+            """, (school_id,))
+
+            facilities = cursor.fetchone()["n"]
+
+            # -------------------------------------------------
+            # QUALIFICATIONS
+            # -------------------------------------------------
+
+            cursor.execute("""
+                SELECT COUNT(*) AS n
+                FROM qualifications
+                WHERE school_id = %s
+            """, (school_id,))
+
+            qualifications = cursor.fetchone()["n"]
+
+            # -------------------------------------------------
+            # IMAGES
+            # -------------------------------------------------
+
+            cursor.execute("""
+                SELECT COUNT(*) AS n
+                FROM school_images
+                WHERE school_id = %s
+            """, (school_id,))
+
+            images = cursor.fetchone()["n"]
+
+            # -------------------------------------------------
+            # CONTACT
+            # -------------------------------------------------
+
+            cursor.execute("""
+                SELECT COUNT(*) AS n
+                FROM contacts
+                WHERE school_id = %s
+            """, (school_id,))
+
+            contacts = cursor.fetchone()["n"]
+
+            # -------------------------------------------------
+            # RECENT ACTIVITIES
+            # -------------------------------------------------
+
+            cursor.execute("""
+                SELECT
+                    id,
+                    title,
+                    category,
+                    event_date,
+                    status
+                FROM activities
+                WHERE school_id = %s
+                ORDER BY created_at DESC
+                LIMIT 5
+            """, (school_id,))
+
+            recent_activities = cursor.fetchall()
+
+        return jsonify(
+            success=True,
+
+            school=school,
+
+            stats={
+                "activities": activities,
+                "features": features,
+                "facilities": facilities,
+                "qualifications": qualifications,
+                "images": images,
+                "contacts": contacts
+            },
+
+            recent_activities=recent_activities
+        )
+
+    except Exception as e:
+
+        print("ADMIN DASHBOARD ERROR:", e)
+
+        return jsonify(
+            success=False,
+            message="Failed to load admin dashboard",
+            error=str(e)
+        ), 500
+
+    finally:
+        connection.close()
+
+
+# =========================================================
+# LIKE
+# =========================================================
+
+# =========================================================
+
+# ADMIN PHOTO LIKES
+
+@dashboard_bp.get("/admin/photo-likes")
+@auth_required(["ADMIN"])
+def admin_photo_likes():
+    user_id = current_user()["user_id"]
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+            SELECT DISTINCT
+                si.id AS image_id,
+                si.title AS photo_title,
+                si.image_path,
+                si.image_url,
+                si.caption,
+                s.id AS school_id,
+                s.name AS school_name
+            FROM school_images si
+            INNER JOIN schools s
+                ON s.id = si.school_id
+            INNER JOIN school_admins sa
+                ON sa.school_id = s.id
+            INNER JOIN photo_likes pl
+                ON pl.image_id = si.id
+            WHERE sa.user_id = %s
+            ORDER BY si.id DESC
+        """, (user_id,))
+
+        photos = cursor.fetchall()
+
+        result = []
+
+        for photo in photos:
+            cursor.execute("""
+                SELECT
+                    u.id,
+                    u.full_name,
+                    u.email,
+                    pl.created_at
+                FROM photo_likes pl
+                INNER JOIN users u
+                    ON u.id = pl.user_id
+                WHERE pl.image_id = %s
+                  AND u.role = 'MEMBER'
+                ORDER BY pl.created_at DESC
+            """, (photo["image_id"],))
+
+            members = cursor.fetchall()
+
+            result.append({
+                "image_id": photo["image_id"],
+                "photo_title": photo["photo_title"],
+                "image_path": photo["image_path"],
+                "image_url": photo["image_url"],
+                "caption": photo["caption"],
+                "school_id": photo["school_id"],
+                "school_name": photo["school_name"],
+                "like_count": len(members),
+                "members": [
+                    {
+                        "id": m["id"],
+                        "name": m["full_name"],
+                        "email": m["email"],
+                        "created_at": str(m["created_at"])
+                    }
+                    for m in members
+                ]
+            })
+
+        return jsonify({
+            "success": True,
+            "likes": result,
+            "count": len(result)
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": "Failed to load photo likes",
+            "error": str(e)
+        }), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+@auth_required(["ADMIN"])
+def admin_photo_likes():
+    user = current_user()
+    user_id = user["user_id"]
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+            SELECT
+                si.id AS image_id,
+                si.title AS photo_title,
+                si.image_url,
+                si.image_path,
+                si.caption,
+                s.id AS school_id,
+                s.name AS school_name,
+                COUNT(pl.id) AS like_count
+            FROM school_images si
+            INNER JOIN schools s
+                ON s.id = si.school_id
+            INNER JOIN school_admins sa
+                ON sa.school_id = s.id
+            LEFT JOIN photo_likes pl
+                ON pl.image_id = si.id
+            WHERE sa.user_id = %s
+            GROUP BY
+                si.id,
+                si.title,
+                si.image_url,
+                si.image_path,
+                si.caption,
+                s.id,
+                s.name
+            HAVING COUNT(pl.id) > 0
+            ORDER BY like_count DESC, si.id DESC
+        """, (user_id,))
+
+        rows = cursor.fetchall()
+        likes = []
+
+        for row in rows:
+            cursor.execute("""
+                SELECT
+                    u.id,
+                    u.full_name,
+                    u.email,
+                    pl.created_at
+                FROM photo_likes pl
+                INNER JOIN users u
+                    ON u.id = pl.user_id
+                WHERE pl.image_id = %s
+                  AND u.role = 'MEMBER'
+                ORDER BY pl.created_at DESC
+            """, (row["image_id"],))
+
+            member_rows = cursor.fetchall()
+
+            members = []
+            for member in member_rows:
+                members.append({
+                    "id": member["id"],
+                    "name": member["full_name"],
+                    "email": member["email"],
+                    "created_at": member["created_at"]
+                })
+
+            likes.append({
+                "image_id": row["image_id"],
+                "photo_title": row["photo_title"],
+                "image_url": row["image_url"],
+                "image_path": row["image_path"],
+                "caption": row["caption"],
+                "school_id": row["school_id"],
+                "school_name": row["school_name"],
+                "like_count": int(row["like_count"]),
+                "members": members
+            })
+
+        return jsonify(
+            success=True,
+            likes=likes,
+            count=len(likes)
+        )
+
+    except Exception as e:
+        return jsonify(
+            success=False,
+            message="Failed to load photo likes",
+            error=str(e)
+        ), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+@auth_required(["ADMIN"])
+def admin_photo_likes():
+    user = current_user()
+    user_id = user["user_id"]
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+            SELECT
+                si.id AS image_id,
+                si.title AS photo_title,
+                si.image_url,
+                si.image_path,
+                si.caption,
+                s.id AS school_id,
+                s.name AS school_name,
+                COUNT(pl.id) AS like_count,
+                GROUP_CONCAT(
+                    DISTINCT CONCAT(
+                        u.full_name,
+                        '|||',
+                        u.email
+                    )
+                    SEPARATOR '###'
+                ) AS members
+            FROM school_images si
+            INNER JOIN schools s
+                ON s.id = si.school_id
+            INNER JOIN school_admins sa
+                ON sa.school_id = s.id
+            LEFT JOIN photo_likes pl
+                ON pl.image_id = si.id
+            LEFT JOIN users u
+                ON u.id = pl.user_id
+                AND u.role = 'MEMBER'
+            WHERE sa.user_id = %s
+            GROUP BY
+                si.id,
+                si.title,
+                si.image_url,
+                si.image_path,
+                si.caption,
+                s.id,
+                s.name
+            HAVING COUNT(pl.id) > 0
+            ORDER BY like_count DESC, si.id DESC
+        """, (user_id,))
+
+        rows = cursor.fetchall()
+
+        likes = []
+
+        for row in rows:
+            members = []
+
+            if row.get("members"):
+                for item in row["members"].split("###"):
+                    parts = item.split("|||", 1)
+
+                    if len(parts) == 2:
+                        members.append({
+                            "name": parts[0],
+                            "email": parts[1]
+                        })
+
+            likes.append({
+                "image_id": row["image_id"],
+                "photo_title": row["photo_title"],
+                "image_url": row["image_url"],
+                "image_path": row["image_path"],
+                "caption": row["caption"],
+                "school_id": row["school_id"],
+                "school_name": row["school_name"],
+                "like_count": int(row["like_count"]),
+                "members": members
+            })
+
+        return jsonify(
+            success=True,
+            likes=likes,
+            count=len(likes)
+        )
+
+    except Exception as e:
+        return jsonify(
+            success=False,
+            message="Failed to load photo likes",
+            error=str(e)
+        ), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@dashboard_bp.get("/member/likes")
+@auth_required(["MEMBER", "ADMIN", "SUPERADMIN"])
+def member_likes():
+    user_id = current_user()["user_id"]
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+            pl.id,
+            pl.image_id,
+            pl.created_at,
+            si.title,
+            si.image_path,
+            si.image_url,
+            si.caption,
+            s.id AS school_id,
+            s.name AS school_name
+        FROM photo_likes pl
+        INNER JOIN school_images si
+            ON si.id = pl.image_id
+        INNER JOIN schools s
+            ON s.id = si.school_id
+        WHERE pl.user_id = %s
+        ORDER BY pl.created_at DESC
+    """, (user_id,))
+
+    likes = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    return jsonify(
+        success=True,
+        likes=likes,
+        count=len(likes)
+    )
+
+
+@dashboard_bp.post("/member/likes/<int:image_id>")
+@auth_required(["MEMBER"])
+def like_photo(image_id):
+    user_id = current_user()["user_id"]
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id FROM school_images WHERE id=%s",
+        (image_id,)
+    )
+
+    image = cursor.fetchone()
+
+    if not image:
+        cursor.close()
+        conn.close()
+        return jsonify(
+            success=False,
+            message="Photo not found"
+        ), 404
+
+    cursor.execute("""
+        SELECT id
+        FROM photo_likes
+        WHERE user_id=%s AND image_id=%s
+    """, (user_id, image_id))
+
+    existing = cursor.fetchone()
+
+    if existing:
+        cursor.execute(
+            "DELETE FROM photo_likes WHERE id=%s",
+            (existing["id"],)
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify(
+            success=True,
+            liked=False,
+            message="Photo unliked"
+        )
+
+    cursor.execute("""
+        INSERT INTO photo_likes
+        (user_id, image_id)
+        VALUES (%s, %s)
+    """, (user_id, image_id))
+
+    conn.commit()
+
+    cursor.close()
+    conn.close()
+
+    return jsonify(
+        success=True,
+        liked=True,
+        message="Photo liked"
+    )
+
+
+@dashboard_bp.post("/schools/<int:sid>/like")
+@auth_required(["MEMBER", "ADMIN", "SUPERADMIN"])
+def like(sid):
+
+    return jsonify(
+        success=False,
+        message="Likes feature is not enabled yet."
+    ), 501
