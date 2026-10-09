@@ -1,0 +1,10 @@
+venv/
+.env
+.env.*
+!.env.example
+.env.backup
+.env.save
+__pycache__/
+*.pyc
+uploads/*
+!uploads/.gitkeep
